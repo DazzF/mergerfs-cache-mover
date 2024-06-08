@@ -3,7 +3,7 @@ Python script for moving files on a cached disk to a backing mergerFS disk pool.
 
 More information in this blog post:
 
-https://blog.muffn.io/posts/part-4-100tb-mini-nas/ (if that link doesn't work it's not released yet.)
+https://blog.muffn.io/posts/part-3-mini-100tb-nas/
 
 ## How It Works
 The script operates by checking the disk usage of the cache directory. If the usage is above the threshold percentage defined in the configuration file (`config.yml`), it will move the oldest files out to the backing storage location until the usage is below a defined target percentage. Empty directories are also cleaned up after files are moved.
