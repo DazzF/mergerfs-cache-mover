@@ -150,22 +150,16 @@ def move_files_concurrently(files_to_move):
     global should_exit
     should_exit = False
     
-    for src in files_to_move:
-        if should_exit:
-            logger.info("Exiting after the current file transfer completes.")
-            return
-        move_file(src, BACKING_PATH)
-
-    # with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-    #     futures = [executor.submit(move_file, src, BACKING_PATH) for src in files_to_move]
-    #     for future in futures:
-    #         if should_exit:
-    #             logger.info("Exiting after the current file transfer completes.")
-    #             break
-    #         try:
-    #             future.result()
-    #         except Exception as e:
-    #             logger.error(f"Error moving file: {e}")
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = [executor.submit(move_file, src, BACKING_PATH) for src in files_to_move]
+        for future in futures:
+            if should_exit:
+                logger.info("Exiting after the current file transfer completes.")
+                break
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"Error moving file: {e}")
 
 def delete_empty_dirs(path):
     # Recursively delete empty directories.
