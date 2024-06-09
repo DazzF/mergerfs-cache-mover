@@ -3,6 +3,7 @@
 import os
 import shutil
 import logging
+import time
 import yaml
 import subprocess
 import signal
@@ -26,8 +27,7 @@ with open(config_path, 'r') as config_file:
 CACHE_PATH = config['Paths']['CACHE_PATH']
 BACKING_PATH = config['Paths']['BACKING_PATH']
 LOG_PATH = config['Paths']['LOG_PATH']
-THRESHOLD_PERCENTAGE = float(config['Settings']['THRESHOLD_PERCENTAGE'])
-TARGET_PERCENTAGE = float(config['Settings']['TARGET_PERCENTAGE'])
+FILE_AGE = int(config['Settings']['FILE_AGE'])
 MAX_WORKERS = int(config['Settings']['MAX_WORKERS'])
 MAX_LOG_SIZE_MB = int(config['Settings']['MAX_LOG_SIZE_MB'])
 BACKUP_COUNT = int(config['Settings']['BACKUP_COUNT'])
@@ -98,10 +98,13 @@ def gather_files_to_move():
     all_files.sort(key=lambda fn: os.stat(fn).st_mtime)
     files_to_move = []
 
-    # Use TARGET_PERCENTAGE to determine when to stop moving files
-    while get_fs_usage(CACHE_PATH) > TARGET_PERCENTAGE and all_files:
-        oldest_file = all_files.pop(0)
-        files_to_move.append(oldest_file)
+    # Use the file last modified timestamp and remove anything newer than an hour ago
+    
+    cutoff_time = time.time() - FILE_AGE  # 1 hour ago
+    for file_path in all_files:
+        if os.stat(file_path).st_mtime <= cutoff_time:
+            files_to_move.append(file_path)
+
     return files_to_move
 
 
@@ -117,12 +120,27 @@ def move_file(src, dest_base):
         # Ensure the destination directory exists
         os.makedirs(dest_dir, exist_ok=True)
 
-        cmd = ["rsync", "-avh", "--remove-source-files", f"--chown={USER}:{GROUP}", f"--chmod={FILE_CHMOD}", "--perms", f"--chmod=D{DIR_CHMOD}", src, dest_dir]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error(f"Error moving file from {src} to {dest_dir} using rsync. Return code: {result.returncode}. Output: {result.stdout}. Error: {result.stderr}")
+        if os.name == 'posix':
+            cmd = ["rsync", "-avh", "--remove-source-files", f"--chown={USER}:{GROUP}", f"--chmod={FILE_CHMOD}", "--perms", f"--chmod=D{DIR_CHMOD}", src, dest_dir]
+        elif os.name == 'nt':
+            src_dir = os.path.dirname(src)
+            cmd = ["robocopy", src_dir, dest_dir, relative_path, "/MOV"]
         else:
-            logger.info(f"Moved {src} to {os.path.join(dest_dir, os.path.basename(src))}")
+            logger.error("Unsupported operating system. Unable to move files.")
+            return
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if os.name == 'posix':
+            if result.returncode != 0:
+                logger.error(f"Error moving file from {src} to {dest_dir} using rsync. Return code: {result.returncode}. Output: {result.stdout}. Error: {result.stderr}")
+            else:
+                logger.info(f"Moved {src} to {os.path.join(dest_dir, os.path.basename(src))}")
+        elif os.name == 'nt':
+            if result.returncode == 1:
+                logger.info(f"Moved {src} to {os.path.join(dest_dir, os.path.basename(src))}")
+            else:
+                logger.error(f"Error moving file from {src} to {dest_dir} using robocopy. Return code: {result.returncode}. Output: {result.stdout}. Error: {result.stderr}")
+        else:
+            logger.error("Unsupported operating system. Unable to move files.")
     except subprocess.CalledProcessError as cpe:
         logger.error(f"Error moving file from {src} to {dest_dir} using rsync. Error: {cpe}")
     except Exception as e:
@@ -131,17 +149,23 @@ def move_file(src, dest_base):
 def move_files_concurrently(files_to_move):
     global should_exit
     should_exit = False
+    
+    for src in files_to_move:
+        if should_exit:
+            logger.info("Exiting after the current file transfer completes.")
+            return
+        move_file(src, BACKING_PATH)
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(move_file, src, BACKING_PATH) for src in files_to_move]
-        for future in futures:
-            if should_exit:
-                logger.info("Exiting after the current file transfer completes.")
-                break
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"Error moving file: {e}")
+    # with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    #     futures = [executor.submit(move_file, src, BACKING_PATH) for src in files_to_move]
+    #     for future in futures:
+    #         if should_exit:
+    #             logger.info("Exiting after the current file transfer completes.")
+    #             break
+    #         try:
+    #             future.result()
+    #         except Exception as e:
+    #             logger.error(f"Error moving file: {e}")
 
 def delete_empty_dirs(path):
     # Recursively delete empty directories.
@@ -166,16 +190,12 @@ def main():
         logging.warning("Another instance of the script is running. Exiting.")
         return
 
-    current_usage = get_fs_usage(CACHE_PATH)
-    logging.debug(f"Current cache usage: {current_usage:.2f}%")
-    logging.debug(f"Threshold percentage: {THRESHOLD_PERCENTAGE}%")
+    #current_usage = get_fs_usage(CACHE_PATH)
+    #logging.debug(f"Current cache usage: {current_usage:.2f}%")
+    #logging.debug(f"Threshold percentage: {THRESHOLD_PERCENTAGE}%")
 
-    if current_usage > THRESHOLD_PERCENTAGE:
-        logging.info(f"Cache usage is {current_usage:.2f}%, exceeding threshold. Starting file move...")
-        files_to_move = gather_files_to_move()
-        move_files_concurrently(files_to_move)
-    else:
-        logging.info(f"Cache usage is below the threshold ({THRESHOLD_PERCENTAGE}%). No action required.")
+    files_to_move = gather_files_to_move()
+    move_files_concurrently(files_to_move)
 
     # Clean up any empty directories under the cache path
     for root_folder in [os.path.join(CACHE_PATH, d) for d in os.listdir(CACHE_PATH) if os.path.isdir(os.path.join(CACHE_PATH, d))]:
