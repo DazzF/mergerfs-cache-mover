@@ -1,5 +1,3 @@
-#Muffin's mergerfs cache mover. https://github.com/MonsterMuffin/mergerfs-cache-mover
-
 import os
 import shutil
 import logging
